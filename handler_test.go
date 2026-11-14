@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
@@ -109,6 +111,66 @@ func TestFolderTarAvailable(t *testing.T) {
 	}
 	if got := folderTarAvailable(dir, nil); got != "true" {
 		t.Fatalf("one directory: %s", got)
+	}
+}
+
+func TestBoundedTarRanges(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a"), bytes.Repeat([]byte("a"), 10000), 0644); err != nil {
+		t.Fatal(err)
+	}
+	request := func(method string, headers http.Header) *httptest.ResponseRecorder {
+		var ctx caddy.Context
+		systems := ctx.FileSystems()
+		h := Handler{Root: root, QueryParam: "download", QueryValue: "tar", logger: zap.NewNop(), fileSystems: systems, osFS: systems.Default()}
+		r := httptest.NewRequest(method, "http://files.example/?download=tar", nil)
+		r.Header = headers.Clone()
+		r = r.WithContext(context.WithValue(r.Context(), caddy.ReplacerCtxKey, caddy.NewReplacer()))
+		w := httptest.NewRecorder()
+		if err := h.ServeHTTP(w, r, caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error { t.Fatal("unexpected fallback"); return nil })); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	full := request(http.MethodGet, http.Header{})
+	etag := full.Header().Get("ETag")
+	if full.Code != 200 || etag == "" || full.Header().Get("Accept-Ranges") != "bytes" || full.Header().Get("Content-Length") != strconv.Itoa(full.Body.Len()) {
+		t.Fatalf("full response: %d %v", full.Code, full.Header())
+	}
+	head := request(http.MethodHead, http.Header{})
+	if head.Code != 200 || head.Header().Get("Content-Length") != strconv.Itoa(full.Body.Len()) || head.Body.Len() != 0 {
+		t.Fatal("invalid HEAD")
+	}
+	partial := request(http.MethodGet, http.Header{"Range": {"bytes=400-1300"}, "If-Range": {etag}})
+	if partial.Code != 206 || partial.Header().Get("Content-Range") != fmt.Sprintf("bytes 400-1300/%d", full.Body.Len()) || partial.Header().Get("Content-Length") != "901" || !bytes.Equal(partial.Body.Bytes(), full.Body.Bytes()[400:1301]) {
+		t.Fatalf("range: %d %v", partial.Code, partial.Header())
+	}
+	if got := request(http.MethodGet, http.Header{"Range": {"bytes=10-"}}); got.Code != 200 {
+		t.Fatalf("unvalidated range: %d", got.Code)
+	}
+	if got := request(http.MethodGet, http.Header{"Range": {"bytes=999999-"}, "If-Range": {etag}}); got.Code != 416 {
+		t.Fatalf("invalid range: %d", got.Code)
+	}
+	before, err := os.Stat(filepath.Join(root, "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a"), bytes.Repeat([]byte("b"), 10000), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(root, "a"), before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	changed := request(http.MethodGet, http.Header{"Range": {"bytes=10-"}, "If-Range": {etag}})
+	if changed.Code != 200 || changed.Header().Get("ETag") == etag || bytes.Equal(changed.Body.Bytes(), full.Body.Bytes()) {
+		t.Fatal("changed archive should restart")
+	}
+	if err := os.MkdirAll(filepath.Join(root, "one", "two"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	deep := request(http.MethodGet, http.Header{"Range": {"bytes=10-"}, "If-Range": {etag}})
+	if deep.Code != 200 || deep.Header().Get("ETag") != "" || deep.Header().Get("Accept-Ranges") != "" {
+		t.Fatalf("deep fallback: %d %v", deep.Code, deep.Header())
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 
 func hardlinkID(fs.FileInfo) (fileID, bool) { return fileID{}, false }
 
+func metadataVersion(fs.FileInfo) (string, bool) { return "", false }
+
 func openFile(_ *os.Root, _ string) (*os.File, error) {
 	return nil, errors.New("tar downloads require a Unix filesystem")
 }

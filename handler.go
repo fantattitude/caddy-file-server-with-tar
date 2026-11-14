@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -132,12 +133,22 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		return directoryError(err)
 	}
 	defer directory.Close()
+	archiveRoot := path.Base(path.Clean("/" + r.URL.Path))
+	if archiveRoot == "/" {
+		archiveRoot = "archive"
+	}
+	skip := func(name string) bool { return fileHidden(filepath.Join(filename, name), hide) }
+	plan, complete, err := tarstream.PlanBounded(r.Context(), directory, archiveRoot, skip)
+	if err != nil {
+		return caddyhttp.Error(http.StatusInternalServerError, err)
+	}
+	if plan != nil {
+		defer plan.Close()
+	}
 	if estimate {
-		size, complete, err := tarstream.Estimate(r.Context(), directory, func(name string) bool {
-			return fileHidden(filepath.Join(filename, name), hide)
-		})
-		if err != nil {
-			return caddyhttp.Error(http.StatusInternalServerError, err)
+		var size int64
+		if complete {
+			size = plan.Size()
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "private, max-age=3600")
@@ -147,24 +158,28 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		return json.NewEncoder(w).Encode(map[string]any{"bytes": size, "complete": complete})
 	}
 
-	archiveRoot := path.Base(path.Clean("/" + r.URL.Path))
-	if archiveRoot == "/" {
-		archiveRoot = "archive"
-	}
-
 	w.Header().Set("Content-Type", "application/x-tar")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": archiveRoot + ".tar"}))
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if complete {
+		w.Header().Set("ETag", plan.ETag())
+		// Without a validator the server cannot know whether a partial local
+		// archive was generated from this version of the directory.
+		if r.Header.Get("Range") != "" && r.Header.Get("If-Range") == "" {
+			r = r.Clone(r.Context())
+			r.Header.Del("Range")
+		}
+		http.ServeContent(w, r, archiveRoot+".tar", time.Time{}, plan)
+		return nil
+	}
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return nil
 	}
 
 	w.WriteHeader(http.StatusOK)
-	err = tarstream.WriteRoot(r.Context(), w, directory, archiveRoot, func(name string) bool {
-		return fileHidden(filepath.Join(filename, name), hide)
-	})
+	err = tarstream.WriteRoot(r.Context(), w, directory, archiveRoot, skip)
 	if err != nil {
 		if r.Context().Err() != nil {
 			return nil

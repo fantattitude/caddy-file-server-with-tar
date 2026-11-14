@@ -14,7 +14,11 @@ files.example.com {
 
 `GET /photos/?download=tar` streams `photos.tar` without creating a temporary archive. `HEAD` returns the download headers. The built-in HTML listing adds a **Download folder (.tar)** link. With a custom browse template you can add `href="?download=tar"` yourself or use the supplied `browse.html`.
 
-`?download=tar-size` returns a JSON size estimate for the current directory and its immediate subdirectories. It returns `complete: false` when a deeper directory is encountered. Successful estimates are privately cached for one hour. Custom browse templates can check `placeholder (printf "folder_tar.show.%s" .Name)` for each directory; it is `"false"` for a folder containing only one visible file, or when the folder cannot be inspected. This reads up to two visible entries per directory during page rendering.
+`?download=tar-size` returns the exact planned tar size for the current directory and its immediate subdirectories, including tar headers and hardlinks. It returns `complete: false` when a deeper directory is encountered or the filesystem cannot supply the required metadata. Successful responses are privately cached for one hour. The directory can change after an estimate is cached. Custom browse templates can check `placeholder (printf "folder_tar.show.%s" .Name)` for each directory; it is `"false"` for a folder containing only one visible file, or when the folder cannot be inspected. This reads up to two visible entries per directory during page rendering.
+
+For the same bounded directory depth, downloads are planned from metadata and streamed directly from the original files without a temporary tar. Responses include the exact `Content-Length`, `Accept-Ranges: bytes`, and a metadata-derived ETag. A `Range` request with a matching `If-Range` validator seeks directly to the requested archive offset; a missing or stale validator restarts with a full `200` response. Deeper directories retain normal streaming without a length or range support. Plans are recalculated for every request, so the browser's cached size is not used to frame the download.
+
+The validator and read-time checks use filesystem identity, change time, modification time, size, mode, and generated tar headers—not file-content hashes or an immutable snapshot. Ordinary file changes cause a restart or interrupt the stream, but metadata alone cannot guarantee detection of every in-place change. Resume assumes files remain unchanged while downloading. The response may terminate if a file changes or becomes unreadable during streaming.
 
 ## Nix
 
