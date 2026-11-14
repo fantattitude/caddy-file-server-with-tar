@@ -111,16 +111,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		return caddyhttp.Error(http.StatusNotFound, nil)
 	}
 
-	rel, err := filepath.Rel(root, filename)
-	if err != nil {
-		return caddyhttp.Error(http.StatusInternalServerError, err)
-	}
-	base, err := os.OpenRoot(root)
-	if err != nil {
-		return directoryError(err)
-	}
-	defer base.Close()
-	directory, err := openDirectory(base, rel)
+	directory, err := openDirectory(filename)
 	if err != nil {
 		return directoryError(err)
 	}
@@ -157,36 +148,31 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 
 var errNotDirectory = errors.New("tar download target is not a directory")
 
-// Check each path component so a symlink can't be used as a download URL,
-// even if the link points to another directory within the configured root.
-func openDirectory(base *os.Root, rel string) (*os.Root, error) {
-	dir, err := base.OpenRoot(".")
-	if err != nil || rel == "." {
-		return dir, err
-	}
-	for _, component := range strings.Split(rel, string(filepath.Separator)) {
-		next, err := openSubdirectory(dir, component)
-		dir.Close()
-		if err != nil {
-			return nil, err
-		}
-		dir = next
-	}
-	return dir, nil
-}
-
-func openSubdirectory(parent *os.Root, name string) (*os.Root, error) {
-	info, err := parent.Lstat(name)
+// Follow the requested directory path just like Caddy's native file server,
+// including symlink aliases outside the site root. Pin the selected directory
+// before archiving; tarstream still preserves descendant symlinks as links.
+func openDirectory(filename string) (*os.Root, error) {
+	info, err := os.Stat(filename)
 	if err != nil {
 		return nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, os.ErrNotExist
 	}
 	if !info.IsDir() {
 		return nil, errNotDirectory
 	}
-	return tarstream.OpenDirectory(parent, name, info)
+	dir, err := os.OpenRoot(filename)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := dir.Stat(".")
+	if err != nil {
+		dir.Close()
+		return nil, err
+	}
+	if !os.SameFile(info, opened) {
+		dir.Close()
+		return nil, os.ErrNotExist
+	}
+	return dir, nil
 }
 
 func directoryError(err error) error {

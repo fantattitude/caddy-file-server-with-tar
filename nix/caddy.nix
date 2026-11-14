@@ -7,7 +7,7 @@
 let
   src = lib.fileset.toSource {
     root = ../.;
-    fileset = lib.fileset.unions [ ../go.mod ../go.sum ../handler.go ../cmd ../internal ];
+    fileset = lib.fileset.unions [ ../go.mod ../go.sum ../handler.go ../handler_test.go ../cmd ../internal ];
   };
   custom = extraPlugins != [ ] || caddyVersion != "2.11.9";
   specs = lib.sort builtins.lessThan extraPlugins;
@@ -60,6 +60,11 @@ buildGoModule {
   vendorHash = if custom then null else "sha256-P93c/bRHZCOK5G3ZYkphd/wZsSpCApeqS1fxo1RyEHs=";
   subPackages = [ "cmd/caddy" ];
   tags = [ "nobadger" "nomysql" "nopgx" ];
+  checkPhase = ''
+    runHook preCheck
+    go test -tags=nobadger,nomysql,nopgx ./...
+    runHook postCheck
+  '';
   ldflags = [ "-s" "-w" "-X github.com/caddyserver/caddy/v2.CustomVersion=${caddyVersion}" ];
   meta = {
     description = "Caddy with streamed tar downloads for directories";
