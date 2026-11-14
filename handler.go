@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -93,6 +94,20 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		if h.Browse && localFS {
 			repl.Set("folder_tar.browse", "true")
 			defer repl.Delete("folder_tar.browse")
+			root := repl.ReplaceAll(h.Root, ".")
+			filename := filepath.Clean(caddyhttp.SanitizedPathJoin(root, r.URL.Path))
+			hide := transformHidePaths(h.Hide, repl)
+			repl.Map(func(key string) (any, bool) {
+				name, ok := strings.CutPrefix(key, "folder_tar.show.")
+				if !ok {
+					return nil, false
+				}
+				name = strings.TrimSuffix(name, "/")
+				if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") || fileHidden(filename, hide) {
+					return "false", true
+				}
+				return folderTarAvailable(filepath.Join(filename, name), hide), true
+			})
 		}
 		return next.ServeHTTP(w, r)
 	}
@@ -125,7 +140,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 			return caddyhttp.Error(http.StatusInternalServerError, err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "private, max-age=60")
+		w.Header().Set("Cache-Control", "private, max-age=3600")
 		if r.Method == http.MethodHead {
 			return nil
 		}
@@ -162,6 +177,50 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 }
 
 var errNotDirectory = errors.New("tar download target is not a directory")
+
+// Determine eligibility during HTML rendering, reading at most two visible
+// entries. Failure is conservative: do not offer an action we cannot assess.
+func folderTarAvailable(folder string, hide []string) string {
+	if fileHidden(folder, hide) {
+		return "false"
+	}
+	dir, err := os.Open(folder)
+	if err != nil {
+		return "false"
+	}
+	defer dir.Close()
+	count := 0
+	var first os.DirEntry
+	for {
+		entries, err := dir.ReadDir(1)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "false"
+		}
+		if len(entries) == 0 {
+			break
+		}
+		entry := entries[0]
+		if fileHidden(filepath.Join(folder, entry.Name()), hide) {
+			continue
+		}
+		count++
+		if count == 2 {
+			return "true"
+		}
+		first = entry
+	}
+	if count == 0 {
+		return "true"
+	}
+	info, err := os.Stat(filepath.Join(folder, first.Name()))
+	if err != nil && first.Type()&os.ModeSymlink == 0 {
+		return "false"
+	}
+	if err == nil && info.IsDir() {
+		return "true"
+	}
+	return "false"
+}
 
 // Follow the requested directory path just like Caddy's native file server,
 // including symlink aliases outside the site root. Pin the selected directory
@@ -225,7 +284,7 @@ func parseCaddyfile(h httpcaddyfile.Helper) ([]httpcaddyfile.ConfigValue, error)
 
 	tarHandler := Handler{
 		Root: fsrv.Root, FileSystem: fsrv.FileSystem, Hide: fsrv.Hide,
-		Browse: fsrv.Browse != nil && fsrv.Browse.TemplateFile == "",
+		Browse: fsrv.Browse != nil,
 	}
 
 	tarRaw := caddyconfig.JSONModuleObject(&tarHandler, "handler", "folder_tar", nil)

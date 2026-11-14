@@ -14,6 +14,8 @@ files.example.com {
 
 `GET /photos/?download=tar` streams `photos.tar` without creating a temporary archive. `HEAD` returns the download headers. The built-in HTML listing adds a **Download folder (.tar)** link. With a custom browse template you can add `href="?download=tar"` yourself or use the supplied `browse.html`.
 
+`?download=tar-size` returns a JSON size estimate for the current directory and its immediate subdirectories. It returns `complete: false` when a deeper directory is encountered. Successful estimates are privately cached for one hour. Custom browse templates can check `placeholder (printf "folder_tar.show.%s" .Name)` for each directory; it is `"false"` for a folder containing only one visible file, or when the folder cannot be inspected. This reads up to two visible entries per directory during page rendering.
+
 ## Nix
 
 The flake pins Caddy 2.11.9 and uses `nixpkgs` for the Go toolchain and build environment. It exports `packages.<system>.default` on `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. A local checkout can be built with `nix build`, which produces `result/bin/caddy`.

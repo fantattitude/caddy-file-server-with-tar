@@ -78,6 +78,40 @@ func TestTarDownloadThroughSymlink(t *testing.T) {
 	}
 }
 
+func TestFolderTarAvailable(t *testing.T) {
+	dir := t.TempDir()
+	if got := folderTarAvailable(dir, nil); got != "true" {
+		t.Fatalf("empty: %s", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "one"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := folderTarAvailable(dir, nil); got != "false" {
+		t.Fatalf("one file: %s", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hidden"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := folderTarAvailable(dir, []string{"hidden"}); got != "false" {
+		t.Fatalf("hidden file: %s", got)
+	}
+	if got := folderTarAvailable(dir, nil); got != "true" {
+		t.Fatalf("two files: %s", got)
+	}
+	if err := os.Remove(filepath.Join(dir, "one")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "hidden")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := folderTarAvailable(dir, nil); got != "true" {
+		t.Fatalf("one directory: %s", got)
+	}
+}
+
 func TestTarSymlinkHeadAndErrors(t *testing.T) {
 	share := symlinkShare(t)
 	rec, err := tarRequest(t, share, http.MethodHead, "/Series/Season%201/?download=tar", nil)
