@@ -10,6 +10,13 @@ import (
 	"path"
 )
 
+type fileID struct{ device, inode uint64 }
+
+type archivedLink struct {
+	name string
+	file *os.File
+}
+
 // WriteDirectory writes a streaming archive of the specified local directory.
 func WriteDirectory(ctx context.Context, w io.Writer, dir, archiveRoot string) error {
 	root, err := os.OpenRoot(dir)
@@ -24,6 +31,7 @@ func WriteDirectory(ctx context.Context, w io.Writer, dir, archiveRoot string) e
 // It scans immediate subdirectories and reports incomplete for deeper trees.
 func Estimate(ctx context.Context, root *os.Root, skip func(string) bool) (int64, bool, error) {
 	var total int64 = 1024
+	seen := make(map[fileID]struct{})
 	var scan func(*os.Root, string, int) (bool, error)
 	scan = func(dir *os.Root, relative string, depth int) (bool, error) {
 		if err := ctx.Err(); err != nil {
@@ -60,7 +68,15 @@ func Estimate(ctx context.Context, root *os.Root, skip func(string) bool) (int64
 					return complete, err
 				}
 			} else if info.Mode().IsRegular() {
-				total += 512 + ((info.Size()+511)/512)*512
+				total += 512
+				id, linked := hardlinkID(info)
+				_, exists := seen[id]
+				if !linked || !exists {
+					total += ((info.Size() + 511) / 512) * 512
+				}
+				if linked {
+					seen[id] = struct{}{}
+				}
 			} else if info.Mode()&os.ModeSymlink != 0 {
 				total += 512
 			}
@@ -80,7 +96,13 @@ func WriteRoot(ctx context.Context, w io.Writer, root *os.Root, archiveRoot stri
 	}
 
 	tw := tar.NewWriter(w)
-	if err := walk(ctx, tw, root, ".", archiveRoot, skip); err != nil {
+	links := make(map[fileID]archivedLink)
+	defer func() {
+		for _, link := range links {
+			link.file.Close()
+		}
+	}()
+	if err := walk(ctx, tw, root, ".", archiveRoot, skip, links); err != nil {
 		return err
 	}
 	if err := tw.Close(); err != nil {
@@ -108,7 +130,7 @@ func OpenDirectory(parent *os.Root, name string, before fs.FileInfo) (*os.Root, 
 	return dir, nil
 }
 
-func walk(ctx context.Context, tw *tar.Writer, dir *os.Root, relative, archiveRoot string, skip func(string) bool) error {
+func walk(ctx context.Context, tw *tar.Writer, dir *os.Root, relative, archiveRoot string, skip func(string) bool, links map[fileID]archivedLink) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -132,14 +154,14 @@ func walk(ctx context.Context, tw *tar.Writer, dir *os.Root, relative, archiveRo
 		if skip != nil && skip(child) {
 			continue
 		}
-		if err := addEntry(ctx, tw, dir, name, child, archiveRoot, skip); err != nil {
+		if err := addEntry(ctx, tw, dir, name, child, archiveRoot, skip, links); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func addEntry(ctx context.Context, tw *tar.Writer, dir *os.Root, name, relative, archiveRoot string, skip func(string) bool) error {
+func addEntry(ctx context.Context, tw *tar.Writer, dir *os.Root, name, relative, archiveRoot string, skip func(string) bool, links map[fileID]archivedLink) error {
 	info, err := dir.Lstat(name)
 	if err != nil {
 		return err
@@ -158,9 +180,9 @@ func addEntry(ctx context.Context, tw *tar.Writer, dir *os.Root, name, relative,
 			return err
 		}
 		defer subdir.Close()
-		return walk(ctx, tw, subdir, relative, archiveRoot, skip)
+		return walk(ctx, tw, subdir, relative, archiveRoot, skip, links)
 	case mode.IsRegular():
-		return writeFile(ctx, tw, dir, name, archiveName, info)
+		return writeFile(ctx, tw, dir, name, archiveName, info, links)
 	default:
 		return nil
 	}
@@ -175,12 +197,17 @@ func writeHeader(tw *tar.Writer, info fs.FileInfo, name, target string) error {
 	return tw.WriteHeader(header)
 }
 
-func writeFile(ctx context.Context, tw *tar.Writer, root *os.Root, name, archiveName string, before fs.FileInfo) error {
+func writeFile(ctx context.Context, tw *tar.Writer, root *os.Root, name, archiveName string, before fs.FileInfo, links map[fileID]archivedLink) error {
 	f, err := openFile(root, name)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	keep := false
+	defer func() {
+		if !keep {
+			f.Close()
+		}
+	}()
 	info, err := f.Stat()
 	if err != nil {
 		return err
@@ -188,11 +215,27 @@ func writeFile(ctx context.Context, tw *tar.Writer, root *os.Root, name, archive
 	if !info.Mode().IsRegular() || !os.SameFile(before, info) {
 		return fmt.Errorf("file changed while opening %q", name)
 	}
+	id, linked := hardlinkID(info)
+	if previous, ok := links[id]; linked && ok {
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name, header.Typeflag, header.Linkname, header.Size = archiveName, tar.TypeLink, previous.name, 0
+		return tw.WriteHeader(header)
+	}
 	if err := writeHeader(tw, info, archiveName, ""); err != nil {
 		return err
 	}
 	_, err = io.CopyN(tw, contextReader{ctx, f}, info.Size())
-	return err
+	if err != nil {
+		return err
+	}
+	if linked {
+		links[id] = archivedLink{name: archiveName, file: f}
+		keep = true
+	}
+	return nil
 }
 
 type contextReader struct {

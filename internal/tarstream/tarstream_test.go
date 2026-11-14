@@ -82,6 +82,116 @@ func TestCancelledContext(t *testing.T) {
 	}
 }
 
+func TestHardlinksArchiveAndEstimate(t *testing.T) {
+	base := t.TempDir()
+	if err := os.Mkdir(filepath.Join(base, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	data := bytes.Repeat([]byte("a"), 4096)
+	first := filepath.Join(base, "first")
+	if err := os.WriteFile(first, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(first, filepath.Join(base, "sub", "second")); err != nil {
+		t.Skipf("hardlinks unavailable: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := WriteDirectory(context.Background(), &buf, base, "archive"); err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(bytes.NewReader(buf.Bytes()))
+	regular, links := 0, 0
+	for {
+		h, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Name == "archive/first" && h.Typeflag == tar.TypeReg {
+			regular++
+		}
+		if h.Name == "archive/sub/second" && h.Typeflag == tar.TypeLink && h.Linkname == "archive/first" && h.Size == 0 {
+			links++
+		}
+	}
+	if regular != 1 || links != 1 {
+		t.Fatalf("regular=%d hardlinks=%d", regular, links)
+	}
+	extracted := t.TempDir()
+	reader = tar.NewReader(bytes.NewReader(buf.Bytes()))
+	for {
+		h, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := filepath.Join(extracted, filepath.FromSlash(h.Name))
+		switch h.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(name, 0755); err != nil {
+				t.Fatal(err)
+			}
+		case tar.TypeReg:
+			content, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(name, content, 0644); err != nil {
+				t.Fatal(err)
+			}
+		case tar.TypeLink:
+			if err := os.Link(filepath.Join(extracted, filepath.FromSlash(h.Linkname)), name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	a, err := os.Stat(filepath.Join(extracted, "archive", "first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.Stat(filepath.Join(extracted, "archive", "sub", "second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(a, b) {
+		t.Fatal("extracted paths are not hardlinked")
+	}
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	size, complete, err := Estimate(context.Background(), root, nil)
+	if err != nil || !complete || size != int64(buf.Len()) {
+		t.Fatalf("estimate=%d archive=%d complete=%v err=%v", size, buf.Len(), complete, err)
+	}
+	buf.Reset()
+	if err := WriteRoot(context.Background(), &buf, root, "archive", func(name string) bool { return name == "first" }); err != nil {
+		t.Fatal(err)
+	}
+	reader = tar.NewReader(bytes.NewReader(buf.Bytes()))
+	for {
+		h, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Name == "archive/sub/second" {
+			if h.Typeflag != tar.TypeReg {
+				t.Fatal("visible file linked to hidden path")
+			}
+			return
+		}
+	}
+	t.Fatal("missing visible hardlink")
+}
+
 func TestEstimateDepthAndHide(t *testing.T) {
 	base := t.TempDir()
 	if err := os.Mkdir(filepath.Join(base, "season"), 0755); err != nil {
