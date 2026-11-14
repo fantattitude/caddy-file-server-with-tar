@@ -82,6 +82,36 @@ func TestCancelledContext(t *testing.T) {
 	}
 }
 
+func TestEstimateDepthAndHide(t *testing.T) {
+	base := t.TempDir()
+	if err := os.Mkdir(filepath.Join(base, "season"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "season", "episode"), []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	size, complete, err := Estimate(context.Background(), root, nil)
+	if err != nil || !complete || size != 3072 {
+		t.Fatalf("got %d %v %v", size, complete, err)
+	}
+	if err := os.Mkdir(filepath.Join(base, "season", "deeper"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, complete, err = Estimate(context.Background(), root, nil)
+	if err != nil || complete {
+		t.Fatalf("expected incomplete, got %v %v", complete, err)
+	}
+	_, complete, err = Estimate(context.Background(), root, func(name string) bool { return name == "season/deeper" })
+	if err != nil || !complete {
+		t.Fatalf("hidden directory should be skipped: %v %v", complete, err)
+	}
+}
+
 func TestCancelledDuringFile(t *testing.T) {
 	root := t.TempDir()
 	data := bytes.Repeat([]byte("a"), 256*1024)

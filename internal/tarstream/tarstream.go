@@ -20,6 +20,57 @@ func WriteDirectory(ctx context.Context, w io.Writer, dir, archiveRoot string) e
 	return WriteRoot(ctx, w, root, archiveRoot, nil)
 }
 
+// Estimate counts file payloads and basic tar blocks, without reading files.
+// It scans immediate subdirectories and reports incomplete for deeper trees.
+func Estimate(ctx context.Context, root *os.Root, skip func(string) bool) (int64, bool, error) {
+	var total int64 = 1024
+	var scan func(*os.Root, string, int) (bool, error)
+	scan = func(dir *os.Root, relative string, depth int) (bool, error) {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		total += 512
+		entries, err := fs.ReadDir(dir.FS(), ".")
+		if err != nil {
+			return false, err
+		}
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			child := path.Join(relative, entry.Name())
+			if skip != nil && skip(child) {
+				continue
+			}
+			info, err := dir.Lstat(entry.Name())
+			if err != nil {
+				return false, err
+			}
+			if info.IsDir() {
+				if depth >= 1 {
+					return false, nil
+				}
+				sub, err := OpenDirectory(dir, entry.Name(), info)
+				if err != nil {
+					return false, err
+				}
+				complete, err := scan(sub, child, depth+1)
+				sub.Close()
+				if err != nil || !complete {
+					return complete, err
+				}
+			} else if info.Mode().IsRegular() {
+				total += 512 + ((info.Size()+511)/512)*512
+			} else if info.Mode()&os.ModeSymlink != 0 {
+				total += 512
+			}
+		}
+		return true, nil
+	}
+	complete, err := scan(root, ".", 0)
+	return total, complete, err
+}
+
 // WriteRoot archives the open directory without following symlink entries.
 // The skip predicate receives paths relative to root, using slash separators.
 func WriteRoot(ctx context.Context, w io.Writer, root *os.Root, archiveRoot string, skip func(string) bool) error {

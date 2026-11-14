@@ -88,7 +88,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	fsName := repl.ReplaceAll(h.FileSystem, "")
 	fileSystem, _ := h.fileSystems.Get(fsName)
 	localFS := fileSystem == h.osFS && (runtime.GOOS == "linux" || runtime.GOOS == "darwin" || runtime.GOOS == "freebsd")
-	if r.URL.Query().Get(h.QueryParam) != h.QueryValue {
+	estimate := r.URL.Query().Get(h.QueryParam) == "tar-size"
+	if r.URL.Query().Get(h.QueryParam) != h.QueryValue && !estimate {
 		if h.Browse && localFS {
 			repl.Set("folder_tar.browse", "true")
 			defer repl.Delete("folder_tar.browse")
@@ -116,6 +117,20 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		return directoryError(err)
 	}
 	defer directory.Close()
+	if estimate {
+		size, complete, err := tarstream.Estimate(r.Context(), directory, func(name string) bool {
+			return fileHidden(filepath.Join(filename, name), hide)
+		})
+		if err != nil {
+			return caddyhttp.Error(http.StatusInternalServerError, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "private, max-age=60")
+		if r.Method == http.MethodHead {
+			return nil
+		}
+		return json.NewEncoder(w).Encode(map[string]any{"bytes": size, "complete": complete})
+	}
 
 	archiveRoot := path.Base(path.Clean("/" + r.URL.Path))
 	if archiveRoot == "/" {
