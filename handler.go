@@ -93,11 +93,14 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	estimate := r.URL.Query().Get(h.QueryParam) == "tar-size"
 	if r.URL.Query().Get(h.QueryParam) != h.QueryValue && !estimate {
 		if h.Browse && localFS {
-			repl.Set("folder_tar.browse", "true")
-			defer repl.Delete("folder_tar.browse")
 			root := repl.ReplaceAll(h.Root, ".")
 			filename := filepath.Clean(caddyhttp.SanitizedPathJoin(root, r.URL.Path))
 			hide := transformHidePaths(h.Hide, repl)
+			available := folderTarAvailable(filename, hide)
+			repl.Set("folder_tar.browse", available)
+			repl.Set("folder_tar.current", available)
+			defer repl.Delete("folder_tar.browse")
+			defer repl.Delete("folder_tar.current")
 			repl.Map(func(key string) (any, bool) {
 				name, ok := strings.CutPrefix(key, "folder_tar.show.")
 				if !ok {
@@ -193,8 +196,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 
 var errNotDirectory = errors.New("tar download target is not a directory")
 
-// Determine eligibility during HTML rendering, reading at most two visible
-// entries. Failure is conservative: do not offer an action we cannot assess.
+// Hide the action for a single file or a folder containing only symlinks.
+// Failure is conservative: do not offer an action we cannot assess.
 func folderTarAvailable(folder string, hide []string) string {
 	if fileHidden(folder, hide) {
 		return "false"
@@ -206,6 +209,7 @@ func folderTarAvailable(folder string, hide []string) string {
 	defer dir.Close()
 	count := 0
 	var first os.DirEntry
+	anyNonSymlink := false
 	for {
 		entries, err := dir.ReadDir(1)
 		if err != nil && !errors.Is(err, io.EOF) {
@@ -219,19 +223,21 @@ func folderTarAvailable(folder string, hide []string) string {
 			continue
 		}
 		count++
-		if count == 2 {
+		anyNonSymlink = anyNonSymlink || entry.Type()&os.ModeSymlink == 0
+		if count >= 2 && anyNonSymlink {
 			return "true"
 		}
-		first = entry
+		if count == 1 {
+			first = entry
+		}
 	}
 	if count == 0 {
 		return "true"
 	}
-	info, err := os.Stat(filepath.Join(folder, first.Name()))
-	if err != nil && first.Type()&os.ModeSymlink == 0 {
+	if !anyNonSymlink {
 		return "false"
 	}
-	if err == nil && info.IsDir() {
+	if first.IsDir() {
 		return "true"
 	}
 	return "false"
