@@ -2,3 +2,4 @@
 /result-*
 /vendor/
 /caddy
+/flake.lock

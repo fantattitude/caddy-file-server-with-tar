@@ -47,7 +47,7 @@ Build once, then replace `lib.fakeHash` with the reported `got:` hash. Refresh t
 
 The package currently omits Caddy's upstream systemd units, which some nixpkgs NixOS module versions expect. Those versions need the units added to the package before enabling the service.
 
-The flake supports `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`. To build the default package from a checkout, run `nix build` and use `result/bin/caddy`.
+The flake supports `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`. The repository does not track a flake lock: a standalone checkout resolves its own nixpkgs, while a consuming flake can pin it. To build the default package from a checkout, run `nix build` and use `result/bin/caddy`.
 
 ## Downloads and sizes
 
