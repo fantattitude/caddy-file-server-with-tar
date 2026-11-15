@@ -1,6 +1,6 @@
-{ lib, buildGoModule, go, stdenvNoCC, cacert }:
+{ lib, buildGoModule, go, stdenvNoCC, cacert, caddy }:
 {
-  caddyVersion ? "2.11.9",
+  caddyVersion ? caddy.version,
   extraPlugins ? [ ],
   sourceHash ? lib.fakeHash,
 }:

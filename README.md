@@ -22,7 +22,7 @@ The validator and read-time checks use filesystem identity, change time, modific
 
 ## Nix
 
-The flake pins Caddy 2.11.9 and uses `nixpkgs` for the Go toolchain and build environment. It exports `packages.<system>.default` on `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. A local checkout can be built with `nix build`, which produces `result/bin/caddy`.
+The flake uses the Caddy version from its `nixpkgs` input, along with its Go toolchain and build environment. It exports `packages.<system>.default` on `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. A local checkout can be built with `nix build`, which produces `result/bin/caddy` when the bundled dependency hash matches that version.
 
 Add the input to your NixOS flake:
 
@@ -44,7 +44,7 @@ services.caddy.package = inputs.caddy-file-server-with-tar.lib.buildCaddy pkgs {
 };
 ```
 
-Build once and replace `lib.fakeHash` with the `got:` hash from Nix. Recompute it after changing the plugin list, Caddy version, or local plugin source. The optional `caddyVersion` argument accepts `2.11.9` or later. The builder checks that Go resolves the requested Caddy and plugin versions. Go resolves shared library dependencies across the entire build, so an older dependency pin may need to move forward.
+Build once and replace `lib.fakeHash` with the `got:` hash from Nix. Recompute it after changing the plugin list, Caddy version, or local plugin source. By default `caddyVersion` is `pkgs.caddy.version`; it can be overridden with a version at least 2.11.9. The standalone default package has a bundled dependency hash for Caddy 2.11.9; another nixpkgs Caddy version requires the customizable builder and a fresh `sourceHash` until the bundled hash is updated. The builder checks that Go resolves the requested Caddy and plugin versions. Go resolves shared library dependencies across the entire build, so an older dependency pin may need to move forward. The tar adapter mirrors Caddy's hide behavior, so review and test compatibility when upgrading Caddy.
 
 ## Go
 
