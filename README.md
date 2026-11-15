@@ -77,7 +77,6 @@ Requires Go 1.26 or later:
 go test ./...
 go build -o caddy ./cmd/caddy
 ./caddy list-modules | grep http.handlers.folder_tar
-./caddy validate --config Caddyfile.example --adapter caddyfile
 ```
 
 To include the plugin in another Caddy build from a local checkout:

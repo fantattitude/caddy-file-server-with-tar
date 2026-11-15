@@ -7,7 +7,7 @@
 let
   src = lib.fileset.toSource {
     root = ../.;
-    fileset = lib.fileset.unions [ ../go.mod ../go.sum ../handler.go ../handler_test.go ../cmd ../internal ];
+    fileset = lib.fileset.unions [ ../go.mod ../go.sum ../handler.go ../cmd ../internal ];
   };
   custom = extraPlugins != [ ] || caddyVersion != "2.11.9";
   specs = lib.sort builtins.lessThan extraPlugins;

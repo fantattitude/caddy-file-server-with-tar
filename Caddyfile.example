@@ -1,9 +1,0 @@
-:8080 {
-	root * /srv/files
-
-	# Same syntax as Caddy's normal file_server, with tar downloads added.
-	file_server_with_tar {
-		hide .git .env
-		browse
-	}
-}
