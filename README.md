@@ -20,34 +20,16 @@ curl -OJ 'https://files.example.com/photos/?download=tar'
 
 Normal file requests are served by Caddy's built-in file server. `file_server_with_tar` accepts the usual `file_server` options, including custom browse templates. For a custom template, add a link to `?download=tar`, or start with the included [browse.html](browse.html).
 
-## Install with Nix
+## Build Caddy
 
-Add the flake input, using SSH for a private repository:
+From a local checkout, build Caddy with the plugin using [xcaddy](https://github.com/caddyserver/xcaddy):
 
-```nix
-inputs.caddy-file-server-with-tar = {
-  url = "git+ssh://git@github.com/fantattitude/caddy-file-server-with-tar.git?ref=main";
-  inputs.nixpkgs.follows = "nixpkgs";
-};
+```sh
+xcaddy build --with "github.com/fantattitude/caddy-file-server-with-tar=$PWD"
+./caddy list-modules | grep http.handlers.folder_tar
 ```
 
-Use the builder in a NixOS module to combine the tar handler with any other plugins:
-
-```nix
-{ inputs, lib, pkgs, ... }: {
-  services.caddy.enable = true;
-  services.caddy.package = inputs.caddy-file-server-with-tar.lib.buildCaddy pkgs {
-    extraPlugins = [ "github.com/caddy-dns/cloudflare@v0.2.4" ];
-    sourceHash = lib.fakeHash;
-  };
-}
-```
-
-Build once, then replace `lib.fakeHash` with the reported `got:` hash. Refresh that hash when the plugin source, plugin list, or Caddy version changes. The builder defaults to `pkgs.caddy.version` (2.11.9 or later); set `caddyVersion` to override it. Its standalone default package has a bundled hash for Caddy 2.11.9; use the builder and a fresh `sourceHash` for another version. Check compatibility when upgrading Caddy.
-
-The package currently omits Caddy's upstream systemd units, which some nixpkgs NixOS module versions expect. Those versions need the units added to the package before enabling the service.
-
-The flake supports `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`. The repository does not track a flake lock: a standalone checkout resolves its own nixpkgs, while a consuming flake can pin it. To build the default package from a checkout, run `nix build` and use `result/bin/caddy`.
+For a private repository, clone it with SSH before building. Caddy 2.11.9 or later is required.
 
 ## Downloads and sizes
 
@@ -66,13 +48,4 @@ Requires Go 1.26 or later:
 
 ```sh
 go test ./...
-go build -o caddy ./cmd/caddy
-./caddy list-modules | grep http.handlers.folder_tar
-```
-
-To include the plugin in another Caddy build from a local checkout:
-
-```sh
-xcaddy build v2.11.9 \
-  --with "github.com/fantattitude/caddy-file-server-with-tar=$PWD"
 ```

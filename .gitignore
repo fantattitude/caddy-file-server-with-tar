@@ -1,5 +1,2 @@
-/result
-/result-*
 /vendor/
 /caddy
-/flake.lock
