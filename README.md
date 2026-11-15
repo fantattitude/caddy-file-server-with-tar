@@ -31,18 +31,7 @@ inputs.caddy-file-server-with-tar = {
 };
 ```
 
-For a Caddy installation without other plugins, add the module to your NixOS host's module list and enable Caddy:
-
-```nix
-modules = [
-  inputs.caddy-file-server-with-tar.nixosModules.default
-  { services.caddy.enable = true; }
-];
-```
-
-The package currently omits Caddy's upstream systemd units, which some nixpkgs NixOS module versions expect. Those versions need the units added to the package before enabling the service.
-
-To use other Caddy plugins in the same binary, use the builder in a NixOS module instead:
+Use the builder in a NixOS module to combine the tar handler with any other plugins:
 
 ```nix
 { inputs, lib, pkgs, ... }: {
@@ -55,6 +44,8 @@ To use other Caddy plugins in the same binary, use the builder in a NixOS module
 ```
 
 Build once, then replace `lib.fakeHash` with the reported `got:` hash. Refresh that hash when the plugin source, plugin list, or Caddy version changes. The builder defaults to `pkgs.caddy.version` (2.11.9 or later); set `caddyVersion` to override it. Its standalone default package has a bundled hash for Caddy 2.11.9; use the builder and a fresh `sourceHash` for another version. Check compatibility when upgrading Caddy.
+
+The package currently omits Caddy's upstream systemd units, which some nixpkgs NixOS module versions expect. Those versions need the units added to the package before enabling the service.
 
 The flake supports `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`. To build the default package from a checkout, run `nix build` and use `result/bin/caddy`.
 
