@@ -1,54 +1,77 @@
 # Caddy file server with tar downloads
 
-Use `file_server_with_tar` in place of Caddy's native `file_server` where you want directory downloads. Caddy parses the usual `file_server` options and serves ordinary requests itself.
+Give visitors a **Download folder (.tar)** link in Caddy's file browser. Archives are streamed directly from disk; Caddy does not create a temporary tar file.
 
 ```caddyfile
 files.example.com {
-	root * /srv/files
-	file_server_with_tar {
-		browse
-		hide .git .env
-	}
+    root * /srv/files
+    file_server_with_tar {
+        browse
+        hide .git .env
+    }
 }
 ```
 
-`GET /photos/?download=tar` streams `photos.tar` without creating a temporary archive. `HEAD` returns the download headers. The built-in HTML listing adds a **Download folder (.tar)** link. With a custom browse template you can add `href="?download=tar"` yourself or use the supplied `browse.html`.
+Open `https://files.example.com/photos/` to browse the folder, or download it directly:
 
-`?download=tar-size` returns the exact planned tar size for the current directory and its immediate subdirectories, including tar headers and hardlinks. It returns `complete: false` when a deeper directory is encountered or the filesystem cannot supply the required metadata. Successful responses are privately cached for one hour. The directory can change after an estimate is cached. Custom browse templates can check `placeholder (printf "folder_tar.show.%s" .Name)` for each directory; it is `"false"` for a folder containing only one visible file, or when the folder cannot be inspected. This reads up to two visible entries per directory during page rendering.
+```sh
+curl -OJ 'https://files.example.com/photos/?download=tar'
+```
 
-For the same bounded directory depth, downloads are planned from metadata and streamed directly from the original files without a temporary tar. Responses include the exact `Content-Length`, `Accept-Ranges: bytes`, and a metadata-derived ETag. A `Range` request with a matching `If-Range` validator seeks directly to the requested archive offset; a missing or stale validator restarts with a full `200` response. Deeper directories retain normal streaming without a length or range support. Plans are recalculated for every request, so the browser's cached size is not used to frame the download.
+Normal file requests are served by Caddy's built-in file server. `file_server_with_tar` accepts the usual `file_server` options, including custom browse templates. For a custom template, add a link to `?download=tar`, or start with the included [browse.html](browse.html).
 
-The validator and read-time checks use filesystem identity, change time, modification time, size, mode, and generated tar headers—not file-content hashes or an immutable snapshot. Ordinary file changes cause a restart or interrupt the stream, but metadata alone cannot guarantee detection of every in-place change. Resume assumes files remain unchanged while downloading. The response may terminate if a file changes or becomes unreadable during streaming.
+## Install with Nix
 
-## Nix
-
-The flake uses the Caddy version from its `nixpkgs` input, along with its Go toolchain and build environment. It exports `packages.<system>.default` on `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. A local checkout can be built with `nix build`, which produces `result/bin/caddy` when the bundled dependency hash matches that version.
-
-Add the input to your NixOS flake:
+Add the flake input, using SSH for a private repository:
 
 ```nix
 inputs.caddy-file-server-with-tar = {
-  url = "github:fantattitude/caddy-file-server-with-tar";
+  url = "git+ssh://git@github.com/fantattitude/caddy-file-server-with-tar.git?ref=main";
   inputs.nixpkgs.follows = "nixpkgs";
 };
 ```
 
-Import `inputs.caddy-file-server-with-tar.nixosModules.default` in the host's module list to set `services.caddy.package` by default. The module leaves `services.caddy.enable` under your control. You can also assign `inputs.caddy-file-server-with-tar.packages.${pkgs.stdenv.hostPlatform.system}.default` to `services.caddy.package` directly. For private GitHub repositories, Nix needs GitHub credentials or the flake input can use the SSH URL `git+ssh://git@github.com/fantattitude/caddy-file-server-with-tar.git`.
-
-If you already build Caddy with additional plugins, use one binary that includes all of them. The builder takes Go module paths pinned to a tag or canonical pseudo-version:
+For a Caddy installation without other plugins, add the module to your NixOS host's module list and enable Caddy:
 
 ```nix
-services.caddy.package = inputs.caddy-file-server-with-tar.lib.buildCaddy pkgs {
-  extraPlugins = [ "github.com/caddy-dns/cloudflare@v0.2.4" ];
-  sourceHash = lib.fakeHash;
-};
+modules = [
+  inputs.caddy-file-server-with-tar.nixosModules.default
+  { services.caddy.enable = true; }
+];
 ```
 
-Build once and replace `lib.fakeHash` with the `got:` hash from Nix. Recompute it after changing the plugin list, Caddy version, or local plugin source. By default `caddyVersion` is `pkgs.caddy.version`; it can be overridden with a version at least 2.11.9. The standalone default package has a bundled dependency hash for Caddy 2.11.9; another nixpkgs Caddy version requires the customizable builder and a fresh `sourceHash` until the bundled hash is updated. The builder checks that Go resolves the requested Caddy and plugin versions. Go resolves shared library dependencies across the entire build, so an older dependency pin may need to move forward. The tar adapter mirrors Caddy's hide behavior, so review and test compatibility when upgrading Caddy.
+The package currently omits Caddy's upstream systemd units, which some nixpkgs NixOS module versions expect. Those versions need the units added to the package before enabling the service.
 
-## Go
+To use other Caddy plugins in the same binary, use the builder in a NixOS module instead:
 
-Requires Go 1.26 or later. To build and verify from a checkout:
+```nix
+{ inputs, lib, pkgs, ... }: {
+  services.caddy.enable = true;
+  services.caddy.package = inputs.caddy-file-server-with-tar.lib.buildCaddy pkgs {
+    extraPlugins = [ "github.com/caddy-dns/cloudflare@v0.2.4" ];
+    sourceHash = lib.fakeHash;
+  };
+}
+```
+
+Build once, then replace `lib.fakeHash` with the reported `got:` hash. Refresh that hash when the plugin source, plugin list, or Caddy version changes. The builder defaults to `pkgs.caddy.version` (2.11.9 or later); set `caddyVersion` to override it. Its standalone default package has a bundled hash for Caddy 2.11.9; use the builder and a fresh `sourceHash` for another version. Check compatibility when upgrading Caddy.
+
+The flake supports `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`. To build the default package from a checkout, run `nix build` and use `result/bin/caddy`.
+
+## Downloads and sizes
+
+- Archives include a top-level folder, preserve symbolic links and hard links, and omit paths matching `hide`. Dotfiles are included unless hidden explicitly.
+- For a folder containing files and at most one level of subfolders, the server calculates an exact `Content-Length` and supports byte ranges with a matching `If-Range` ETag. Deeper folders still stream, without a known length or resume support.
+- `GET /photos/?download=tar-size` returns JSON such as `{"bytes": 123456, "complete": true}`. If the folder is too deep or the required metadata is unavailable, `complete` is `false`. The response is privately cached for one hour; each actual download is planned again.
+- Resume validation uses filesystem metadata, not a content hash or snapshot. Changing files during a download can interrupt it, and metadata cannot detect every possible in-place change.
+
+Custom browse templates can use `placeholder (printf "folder_tar.show.%s" .Name)` to check whether to show a folder download link. It returns `"false"` for a folder with only one visible file or one that cannot be inspected.
+
+Tar downloads require the default local filesystem on Linux, macOS, or FreeBSD. The requested folder may be a symlink; symlinks *inside* an archive are preserved, not traversed. Folder downloads use the directory route's access controls, so per-file URL matchers do not filter archive contents. Use `hide` to exclude paths.
+
+## Development
+
+Requires Go 1.26 or later:
 
 ```sh
 go test ./...
@@ -63,12 +86,3 @@ To include the plugin in another Caddy build from a local checkout:
 xcaddy build v2.11.9 \
   --with "github.com/fantattitude/caddy-file-server-with-tar=$PWD"
 ```
-
-## Archive behavior and scope
-
-- Tar requests use the default local filesystem on Linux, macOS, and FreeBSD. They return HTTP 501 for other filesystems or platforms. Native requests still use Caddy's configured filesystem.
-- The archive omits entries matched by `hide`, including Caddyfiles the adapter hides automatically. Hidden directories are pruned. The handler mirrors Caddy 2.11's hide matching. Recheck it when changing the Caddy version.
-- An archive contains a top-level directory named after the requested URL directory (`archive/` at the site root). The requested directory path follows symlinks like Caddy's native file server, including aliases whose targets are outside the site root. The selected directory is opened and pinned before streaming. Inside the archive, symlink entries preserve their link targets, including targets outside the share; archive traversal never follows those entries. Preserve link targets only where disclosing them is acceptable.
-- Regular files and directories are included. Sockets, devices, and FIFOs are skipped. Tar downloads follow the access controls on the directory route, so per-file URL matchers inside that directory do not filter the archive. Use `hide` to exclude archive contents.
-- Hardlinked regular files included in the archive share one content copy; later paths are tar hard-link entries referring to the first visible archived path. The size estimate counts their contents once. Open descriptors for the first occurrence of each hardlinked file remain pinned until the stream ends to prevent inode reuse from linking unrelated files.
-- The archive reads the live directory. Changes or read errors during generation can interrupt a download. Extraction should use a tar tool that handles untrusted symlink targets safely.
